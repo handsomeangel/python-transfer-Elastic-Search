@@ -1,0 +1,1394 @@
+from elasticsearch import Elasticsearch
+from elasticsearch.helpers import bulk
+import json
+import time
+from Pinyin2Hanzi import DefaultDagParams
+from Pinyin2Hanzi import dag
+import math
+import datetime
+import pymongo
+import jieba
+import random
+import re
+import csv
+import pandas as pd
+from gensim import corpora, models, similarities
+
+
+class ElasticObj:
+    def __init__(self, index_name, index_type, ip):
+        """
+        :param index_name: 索引名称
+        :param index_type: 索引类型
+        """
+        self.index_name = index_name
+        self.index_type = index_type
+        # 无用户名密码状态
+        self.es = Elasticsearch([ip])
+        # 用户名密码状态
+        # self.es = Elasticsearch([ip],http_auth=('elastic', 'password'),port=9200)
+
+    # 创建索引,知道怎么自己定义和调用自己的分词器
+    def create_index(self):
+        # 创建索引,创建索引名称为index_name，类型为index_type的索引
+        # :param ex: Elasticsearch对象
+        # :return:
+        _index_settings = {
+            # 配置设置
+            "settings": {
+                "analysis": {
+                    "analyzer": {
+                        "pinyin_analyzer": {
+                            "tokenizer": "my_pinyin"
+                        }
+                    },
+                    "tokenizer": {
+                        "my_pinyin": {
+                            "type": "pinyin",
+                            "keep_separate_first_letter": False,
+                            "keep_full_pinyin": True,
+                            "keep_original": True,
+                            "limit_first_letter_length": 16,
+                            "lowercase": True,
+                            "remove_duplicated_term": True
+                        }
+                    }
+                }
+
+            },
+            "mappings": {
+                self.index_type: {
+                    "properties": {
+                        "id": {
+                            "type": "text",
+                            'index': True
+                        },
+                        "substance": {
+                            "type": "text",
+                            "analyzer": "pinyin_analyzer",  # 做文档所用的分词器
+                            "index_options": "offsets"
+                        },
+                        "title": {
+                            "type": "text",
+                            "analyzer": "pinyin_analyzer",  # 做文档所用的分词器
+                            "index_options": "offsets"
+                        },
+                        "PubDate": {
+                            "type": "date",
+                            "analyzer": "pinyin_analyzer",  # 做文档所用的分词器
+                            "index_options": "offsets"
+                        },
+                    }
+
+                }
+
+            }
+            # 创建映射, 对具体的字段进行设置
+            # "settings": {
+            #     "analysis": {
+            #         "analyzer": {
+            #             "ik_pinyin_analyzer": {
+            #                 "type": "custom",
+            #                 "tokenizer": "ik_max_word",
+            #                 "filter": ["pinyin_max_word_filter"]
+            #             },
+            #             "ik_pingying_smark": {
+            #                 "type": "custom",
+            #                 "tokenizer": "ik_smart",
+            #                 "filter": ["pinyin_smark_word_filter"]
+            #
+            #             }
+            #         },
+            #         "filter": {
+            #             "pinyin_max_word_filter": {
+            #                 "type": "pinyin",
+            #                 "keep_full_pinyin": True,  # 分词全拼如雪花 分词xue,hua
+            #                 "keep_separate_first_letter": True,  # 分词简写如雪花 分词xh
+            #                 "keep_joined_full_pinyin": True  # 分词会quanpin 连接 比如雪花分词 xuehua
+            #             },
+            #             "pinyin_smark_word_filter": {
+            #                 "type": "pinyin",
+            #                 "keep_separate_first_letter": True,  # 不分词简写如雪花 分词不分词xh
+            #                 "keep_first_letter": True,  # 不分词单个首字母 如雪花 不分词 x,h
+            #                 "keep_joined_full_pinyin": True  # 分词会quanpin 连接 比如雪花分词 xuehua
+            #             }
+            #         }
+            #     }
+            #
+            # },
+            # "mappings": {
+            #     "properties": {
+            #         "id": {
+            #             "type": "text",
+            #             'index': True
+            #         },
+            #         "substance": {
+            #             "type": "text",
+            #             "analyzer": "my_pinyin_analyzer",  # 做文档所用的分词器
+            #             "search_analyzer": "my_pinyin_analyzer",  # 搜索使用的分词器
+            #             'index': True,
+            #             "index_options": "offsets"
+            #         },
+            #         "title": {
+            #             "type": "text",
+            #             "analyzer": "my_pinyin_analyzer",  # 做文档所用的分词器
+            #             "search_analyzer": "my_pinyin_analyzer",  # 搜索使用的分词器
+            #             'index': True,
+            #             "index_options": "offsets"
+            #         }
+            #     }
+            #
+            # }
+        }
+        # _index = {
+        #     "settings": {
+        #         "analysis": {
+        #             "filter": {
+        #                 "trigrams_filter": {
+        #                     "type": "ngram",
+        #                     "min_gram": 3,
+        #                     "max_gram": 3
+        #                 }
+        #             },
+        #             "analyzer": {
+        #                 "trigrams": {
+        #                     "type": "custom",
+        #                     "tokenizer": "standard",
+        #                     "filter": [
+        #                         "lowercase",
+        #                         "trigrams_filter"
+        #                     ]
+        #                 }
+        #             }
+        #         }
+        #     },
+        #     "mappings": {
+        #         "my_type": {
+        #             "properties": {
+        #                 "text": {
+        #                     "type": "string",
+        #                     "analyzer": "trigrams"
+        #                 }
+        #             }
+        #         }
+        #     }
+        # }
+        _index_settings1 = {
+            # 配置设置
+            "settings": {
+                "analysis": {
+                    "analyzer": {
+                        "ik_pinyin_analyzer": {
+                            "tokenizer": "my_ik_pinyin",
+                            "filter": "pinyin_first_letter_and_full_pinyin_filter"
+                        },
+                        "pinyin_analyzer": {
+                            "tokenizer": "my_pinyin"
+                        }
+                    },
+                    "tokenizer": {
+                        "my_ik_pinyin": {
+                            "type": "ik_max_word"
+                        },
+                        "my_pinyin": {
+                            "type": "pinyin",
+                            "keep_first_letter": True,
+                            "keep_separate_first_letter": False,
+                            "keep_full_pinyin": False,
+                            "keep_joined_full_pinyin": True,
+                            "keep_none_chinese": True,
+                            "none_chinese_pinyin_tokenize": False,
+                            "keep_none_chinese_in_joined_full_pinyin": True,
+                            "keep_original": False,
+                            "limit_first_letter_length": 16,
+                            "lowercase": True,
+                            "trim_whitespace": True,
+                            "remove_duplicated_term": True
+                        }
+                    },
+                    "filter": {
+                        "pinyin_first_letter_and_full_pinyin_filter": {
+                            "type": "pinyin",
+                            "keep_first_letter": True,
+                            "keep_separate_first_letter": False,
+                            "keep_full_pinyin": False,
+                            "keep_joined_full_pinyin": True,
+                            "keep_none_chinese": True,
+                            "none_chinese_pinyin_tokenize": False,
+                            "keep_none_chinese_in_joined_full_pinyin": True,
+                            "keep_original": False,
+                            "limit_first_letter_length": 16,
+                            "lowercase": True,
+                            "trim_whitespace": True,
+                            "remove_duplicated_term": True
+                        }
+                    }
+
+                },
+                "mappings": {
+                    self.index_type: {
+                        "properties": {
+                            "id": {
+                                "type": "text",
+                                'index': True
+                            },
+                            "strTitle": {
+                                "type": "text",
+                                "analyzer": "ik_pinyin_analyzer",  # 做文档所用的分词器
+                                "index_options": "offsets"
+                            },
+                            "strId": {
+                                "type": "text",
+                                'index': True
+                            },
+                            "strContentSource": {
+                                "type": "text",
+                                'index': True
+                            },
+                            "strName": {
+                                "type": "text",
+                                'index': True
+                            },
+                            "strCityCode": {
+                                "type": "text",
+                            },
+                            "strArea": {
+                                "type": "text",
+                            },
+                            "strType": {
+                                "type": "text",
+                            },
+                            "strClass": {
+                                "type": "text",
+                            },
+                            "strPickUrl": {
+                                "type": "text",
+                            },
+                            "strState": {
+                                "type": "text",
+                            },
+                            "strContent": {
+                                "type": "text",
+                                "analyzer": "ik_pinyin_analyzer",  # 做文档所用的分词器
+                                "index_options": "offsets"
+                            },
+                            "strPubDate": {
+                                "type": "keyword",
+                                'format': 'yyyy-MM-dd HH:mm:ss',
+                            },
+                            # "strColumn": {
+                            #     "type": "text",
+                            # },
+                            # "strCreatName": {
+                            #     "type": "text",
+                            # },
+                            # "list_words": {
+                            #     "type": "text",
+                            #     "analyzer": "ik_pinyin_analyzer",  # 做文档所用的分词器
+                            # },
+                        }
+
+                    }
+                }
+            }
+        }
+        _index_settings2 = {
+            # 配置设置
+            "settings": {
+                "analysis": {
+                    "analyzer": {
+                        "ik_pinyin_analyzer": {
+                            "tokenizer": "my_ik_pinyin",
+                            "filter": "pinyin_first_letter_and_full_pinyin_filter"
+                        },
+                        "pinyin_analyzer": {
+                            "tokenizer": "my_pinyin"
+                        }
+                    },
+                    "tokenizer": {
+                        "my_ik_pinyin": {
+                            "type": "ik_max_word"
+                        },
+                        "my_pinyin": {
+                            "type": "pinyin",
+                            "keep_first_letter": True,
+                            "keep_separate_first_letter": False,
+                            "keep_full_pinyin": False,
+                            "keep_joined_full_pinyin": True,
+                            "keep_none_chinese": True,
+                            "none_chinese_pinyin_tokenize": False,
+                            "keep_none_chinese_in_joined_full_pinyin": True,
+                            "keep_original": False,
+                            "limit_first_letter_length": 16,
+                            "lowercase": True,
+                            "trim_whitespace": True,
+                            "remove_duplicated_term": True
+                        }
+                    },
+                    "filter": {
+                        "pinyin_first_letter_and_full_pinyin_filter": {
+                            "type": "pinyin",
+                            "keep_first_letter": True,
+                            "keep_separate_first_letter": False,
+                            "keep_full_pinyin": False,
+                            "keep_joined_full_pinyin": True,
+                            "keep_none_chinese": True,
+                            "none_chinese_pinyin_tokenize": False,
+                            "keep_none_chinese_in_joined_full_pinyin": True,
+                            "keep_original": False,
+                            "limit_first_letter_length": 16,
+                            "lowercase": True,
+                            "trim_whitespace": True,
+                            "remove_duplicated_term": True
+                        }
+                    }
+                }
+            },
+            "mappings": {
+                self.index_type: {
+                    "properties": {
+                        "id": {
+                            "type": "completion",  # 自动补全
+                            'index': True,
+                            # "fields": {
+                            #     "suggest": {
+                            #         "type": "completion",
+                            #         "analyzer": "ik_max_word"
+                            #     }
+                            # }
+                        },
+                        "strTitle": {
+                            "type": "completion",
+                            "analyzer": "ik_pinyin_analyzer",  # 做文档所用的分词器
+                            "index_options": "offsets",
+                            # "fields": {
+                            #     "suggest": {
+                            #         "type": "completion",
+                            #         "analyzer": "ik_max_word"
+                            #     }
+                            # }
+
+                        },
+                        "strContent": {
+                            "type": "completion",
+                            "analyzer": "ik_pinyin_analyzer",  # 做文档所用的分词器
+                            "index_options": "offsets",
+                            # "fields": {
+                            #     "suggest": {
+                            #         "type": "completion",
+                            #         "analyzer": "ik_max_word"
+                            #     }
+                            # }
+                        },
+                        "strPubDate": {
+                            "type": "date",
+                            "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis",
+                            "fields": {
+                                "row": {
+                                    "type": "keyword"
+                                }
+                            },
+                            "fielddata": True
+                        },
+
+                    }
+                }
+            }
+        }
+        if self.es.indices.exists(index=self.index_name) is not True:
+            res = self.es.indices.create(index=self.index_name, body=_index_settings2, ignore=[400, 500])
+            print(res)
+        else:
+            print('index is already exist')
+
+    # 将MongoDB中数据导入数据
+    def Mongo_insert_ES(self):
+        client = pymongo.MongoClient(host='192.168.1.127', port=27017)
+        mydb = client['Sina']
+        collection = mydb['suncn_news_pickfromofficial']
+        es = self.es
+        d = datetime.datetime.today()
+        # mongodb 中的数据都是UTC时间，这里需要将时间转成UTC时间进行查询
+        query = {'createTime': {'$gte': datetime.datetime(d.year, d.month, d.day) - datetime.timedelta(hours=8),
+                                '$lt': datetime.datetime(d.year, d.month, d.day) + datetime.timedelta(hours=16)}}
+
+        docs = []
+        for i in collection.find(query):
+            if len(docs) >= 2000:
+                # 批量插入
+                es.bulk(index=self.index_name, doc_type=self.index_type, body=docs)
+                del docs[:]
+
+            # 剔除不要的字段
+            i.pop("strId")
+            i.pop("strContentSource")
+            i.pop("strCityCode")
+            i.pop("strArea")
+            i.pop("strType")
+            i.pop("strClass")
+            i.pop("strPickUrl")
+            i.pop("strState")
+            i.pop("strPickDate")
+            i.pop("strColumn")
+            i.pop("strCreatName")
+
+            # 时间转换成字符串
+            i["createTime"] = (i.get("createTime") + datetime.timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+            i["updateTime"] = (i.get("updateTime") + datetime.timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+            i["sys_time"] = datetime.datetime.today().strftime('%Y-%m-%d %H:%M:%S')
+
+            docs.append('{"index":{"_id":"%s"}}' % i["uuid"])
+            docs.append(i)
+
+        # 批量写入es，honor_data/tmp
+        es.bulk(index=self.index_name, doc_type=self.index_type, body=docs)
+        del docs[:]
+        client.close()
+        print('同步完成')
+
+    # 将json数据导入数据
+    def insert_data(self, path1):
+        # 读取数据源里面的json
+        with open(path1, 'r+', encoding="utf8") as fr:
+            load_text = json.load(fr)
+            context = load_text["RECORDS"]
+
+        ACTIONS = []  # 用来当做缓存，当达到一个的数目才会上传，批处理的速度会快点
+        i = 1
+        bulk_num = 2000  # 是批处理进行，速度比较快
+        for line in context:
+            action = {  # 数据以json的格式存储到es里面，并且查询的时候返回也json格式
+                "_index": self.index_name,  # 相当于数据库
+                "_type": self.index_type,  # 相当于表
+                "_id": i,  # _id 也可以默认生成，不赋值
+                "_source": {  # 相当于字段，下面的都是具体的字段
+                    "id": line['_id']["$oid"],
+                    "substance": line["strContent"],
+                    "title": line["strTitle"],
+                    'strPubDate': line['strPubDate'],
+                }
+            }
+            i += 1
+            ACTIONS.append(action)
+            # 批量处理
+            if len(ACTIONS) == bulk_num:
+                print('插入', i / bulk_num, '批数据')
+                print(len(ACTIONS))
+                # 设置json的字段的格式，对json的格式进行调整
+                success, _ = bulk(self.es, ACTIONS, index=self.index_name, raise_on_error=True)
+                del ACTIONS[0:len(ACTIONS)]
+                print(success)
+
+        if len(ACTIONS) > 0:
+            success, _ = bulk(self.es, ACTIONS, index=self.index_name, raise_on_error=True)
+            del ACTIONS[0:len(ACTIONS)]  # 清空缓存中的内容，这里相当于一个滑动窗口
+            print('Performed %d actions' % success)
+
+    # 删除es里面的索引,并忽略掉相关的异常
+    def Delete_Index(self, index_name):
+        result = self.es.indices.delete(index=index_name, ignore=[400, 404])
+        print(result)
+
+    # 把es里面的数据删除掉，这里的id是es里面的_id
+    def Delete_Index_Data(self, id):
+        '''
+        删除索引中的一条
+        :param id:
+        :return:
+        '''
+        res = self.es.delete(index=self.index_name, doc_type=self.index_type, id=id)
+        print(res)
+
+    # 更新es里面的内容
+    def Update_Index_Data(self, id, data):
+        '''
+        更新索引中的一条
+        :param id:
+        :return:
+        '''
+        result = self.es.update(index='news', doc_type='politics', body=data, id=id)
+        print(result)
+
+    # 获取相关id的具体信息
+    def Get_Data_Id(self, id):
+        res = self.es.get(index=self.index_name, doc_type=self.index_type, id=id)
+        print(res['_source'])
+
+        print('------------------------------------------------------------------')
+        print(res['_source']['id'], res['_source']['substance'], res['_source']['title'])
+
+    # 查询es里面的数据
+    def seacrh_Data(self, index_name, type_name):
+        result = self.es.search(index=index_name, doc_type=type_name)
+        print(result)
+
+    # 更新索引,可以自动的去修改索引结构
+    def Find_Data_BY_key(self):
+        mapping = {
+            'properties': {
+                'title': {
+                    'type': 'text',
+                    'analyzer': 'pinyin',
+                    'search_analyzer': 'pinyin'
+                }
+            }
+        }
+        self.es.indices.delete(index='news', ignore=[400, 404])
+        self.es.indices.create(index='news', ignore=400)
+        result = self.es.indices.put_mapping(index='news', doc_type='politics', body=mapping)
+        print(result)
+
+    # 查看所有索引
+    def search_index(self):
+        alias = self.es.indices.get_alias()
+        print(alias)
+
+    # 查看索引里面的信息
+    def index_information(self, index_name):
+        # 查询index信息,包含mapping  settings信息
+        result = self.es.indices.get(index_name)
+        print(result)
+
+    def simLabel(self, labels):
+        f = open(r'C:\Users\Administrator\PycharmProjects\python_learn\elasterSerach\SimWords.txt', 'r+',
+                 encoding='utf8')
+        myDict = {}
+        label = ''
+        for line in f.readlines():
+            content = line.split()
+            myDict[content[0]] = content[1:]
+        for i in labels:
+            if i in myDict:
+                label += (i + ' ')
+                label += ' '.join(random.sample(myDict[i], 5))
+        print(label)
+        print('*' * 100)
+        return label
+
+    # 查询相关信息，并把查询到的信息分页滚动展示，最后存入到文件中
+    def Get_Data_By_Body(self, search_info, num, size):
+        # 查询主题，一般都是json的格式
+        doc = {
+            "query": {
+                "multi_match": {
+                    "query": search_info,
+                    "fields": ["title", "substance"]
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=doc, size=size, scroll='5m',
+                               timeout='3s', )
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        with open("solve1_title_subtance.csv", 'a+', encoding="utf8") as fr:
+            for i in results:
+                fr.write(json.dumps(i, ensure_ascii=False) + '\n')
+
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        scroll_id = query['_scroll_id']
+        # 使用divmod设置分页查询, divmod(total,1000)[0]+1 表示总条数除以1000，结果取整数加1
+        for i in range(divmod(total, num)[0] + 1):
+            res = self.es.scroll(scroll_id=scroll_id, scroll='5m')
+            results += res['hits']['hits']
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 将拼音转化成汉字
+    def pinyin_2_Chinese(self, pinyinList):
+        dagParams = DefaultDagParams()
+        # 10个候选值
+        list1 = []
+        result = dag(dagParams, pinyinList, path_num=10, log=True)
+        for item in result:
+            # socre = item.score  # 得分
+            res = item.path  # 转换结果
+            list1.extend(res)
+        return list1
+
+    # 检测是否有有汉字
+    def detect_Chinese(self, string):
+        # 判断一段文本中是否包含简体中文
+        temp = ''
+        res = []
+        count = -1
+        # 针对汉字和拼音的情况
+        for ch in string:
+            count += 1
+            if '\u4e00' <= ch <= '\u9fff':
+                if temp != '':
+                    outcome = self.pinyin_2_Chinese(temp.split())
+                    if res == []:
+                        res = [value for value in outcome]
+                        temp = ''
+                        continue
+                    res = [num + value for value in outcome for num in res]
+                    temp = ''
+                if res:
+                    res = [i + ch for i in res]
+                else:
+                    res.append(ch)
+            else:
+                temp += ch
+            if count == len(string) - 1:
+                if temp == '':
+                    continue
+                else:
+                    outcome = self.pinyin_2_Chinese(temp.split())
+                    if not res:
+                        res = outcome
+                    else:
+                        res = [num + value for value in outcome for num in res]
+                    temp = ''
+
+        return ''.join(res[0])
+
+    # 针对拼音和汉字查询信息
+    def Get_Data_By_pinyinandChinese(self, search_info):
+        search_info = self.detect_Chinese(search_info)
+        # 查询主题，一般都是json的格式
+        doc = {
+            # "query": {
+            #     "multi_match": {
+            #         "query": search_info,
+            #         # "fields": ["substance", "title^2"], # 提升不同字段的权重
+            #         "type": "cross_fields",
+            #         "fields": ["substance^2", "title"],
+            #         "minimum_should_match": "75%"  # 控制精度
+            #     }
+            # },
+            # "highlight": {
+            #     "fields": {
+            #         "title": {"fragment_size": 1500, "number_of_fragments": 4, "no_match_size": 150}
+            #     }
+            # }
+            # 短语匹配
+            "query": {
+                "match_phrase": {
+                    "title": search_info
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=doc, size=10)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 短语匹配, 提高精确度
+    def Phrase_match_pinyinandChinese(self, search_info):
+        search_info = self.detect_Chinese(search_info)
+        # 查询主题，一般都是json的格式
+        doc = {
+            "query": {
+                "match_phrase": {
+                    "title": {
+                        "query": search_info,
+                        "slop": 50
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=doc, size=10)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    def Recom(self, labels, filePath):
+        corpus = []
+        res = []
+        RecList = []
+        data = pd.read_csv(filePath, header=0)
+
+        for i in range(data.shape[0]):
+            if i < 20:
+                # print(data.loc[i, '内容'][2:-2])
+                corpus.append(data.loc[i, '内容'][2:-2].split())
+                res.append(data.loc[i, '标题'])
+            else:
+                RecList.append(data.loc[i, '标题'])
+        dictionary = corpora.Dictionary(corpus)
+        doc_vectors = [dictionary.doc2bow(text) for text in corpus]
+        tfidf = models.TfidfModel(doc_vectors)
+        tfidf_vectors = tfidf[doc_vectors]
+        lsi = models.LsiModel(tfidf_vectors, id2word=dictionary)
+        lsi_vector = lsi[tfidf_vectors]
+        query_bow = dictionary.doc2bow(labels)
+        index = similarities.MatrixSimilarity(lsi_vector)
+        query_lsi = lsi[query_bow]
+        sims = index[query_lsi]
+        zipped = zip(sims, res)
+        sort_zipped = sorted(zipped, key=lambda x: (x[0], x[1]))
+        for i in sort_zipped:
+            RecList.insert(0, i[1])
+        print(RecList)
+
+    # 修改评分函数，针对拼音和汉字,可以结合点赞率
+    def Sorce_pinyinandChinese(self, search_info):
+        # search_info = self.detect_Chinese(search_info)
+        # 查询主题，一般都是json的格式
+        res = self.simLabel(search_info.split(' '))
+        doc = {
+            "query": {
+                "function_score": {
+                    "query": {
+                        "multi_match": {
+                            "query": res,
+                            "fields": ["title", "substance^2"]
+                        }
+                    },
+                    # "field_value_factor": {
+                    #     "field": 10,
+                    #     "modifier": "log1p",
+                    #     "factor": 0.1,
+                    #     "missing": 1
+                    # },
+                    # "boost_mode": "sum"
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=doc, size=1000)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        # path = r'C:\Users\Administrator\PycharmProjects\python_learn\elasterSerach\Save.csv'
+        # stop_path = r'C:\Users\Administrator\PycharmProjects\python_learn\elasterSerach\stop_words_cn.txt'
+        # header = ['标题', '内容']
+        # with open(path, 'a+', encoding='utf8', newline='') as fr:
+        #     writer = csv.DictWriter(fr, fieldnames=header)
+        #     writer.writeheader()  # 写入表头
+        #     for i in results:
+        #         dict1 = {}
+        #         title = i['_source']['title']
+        #         dict1['标题'] = title
+        #         temp = i['_source']['substance']
+        #         URL_REGEX = re.compile(
+        #             r'(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:\'".,<>?«»“”‘’]))',
+        #             re.IGNORECASE)
+        #         temp = re.sub(URL_REGEX, "", temp)  # 去除网址
+        #         context = []
+        #         res = list(jieba.cut(temp))
+        #         stop = [line.strip() for line in open(stop_path, 'r+', encoding='utf8').readlines()]
+        #         for i in res:
+        #             if i not in stop and i not in context:
+        #                 context.append(i)
+        #         dict1['内容'] = [' '.join(context)]
+        #         writer.writerows([dict1])  # 批量写入
+
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        # print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 修改评分函数, 调用自己写的函数
+    def Cos_Sorce_pinyinandChinese(self, search_info):
+        search_info = self.detect_Chinese(search_info)
+        # 查询主题，一般都是json的格式
+        doc = {
+            "query": {
+                "bool": {
+                    "should": [
+                        {"match": {"title": search_info}},
+                        {"match": {"substance": search_info}},
+
+                    ],
+                    "minimum_should_match": 2  # 控制查询到的词，至少包含切分词中的多少个
+
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=doc, size=10)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        for i in results:
+            num = self.cosine_similarity(i['_source']['substance'], search_info) * 100
+            value = self.cosine_similarity(i['_source']['title'], search_info) * 100
+            i['_score'] = (num * 0.7 + value * 0.3)
+        results.sort(key=lambda x: x['_score'], reverse=True)
+
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 主要针对时间 查找新闻
+    def Tream_query(self, search):
+        body = {
+            "query": {
+                "match": {
+                    "strPubDate": "2019-01-13 00:02:00"  # 主要针对时间，或者数字类型的字段
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 前缀查询
+    def Prefix_query(self, search):
+        search = self.detect_Chinese(search)
+        body = {
+            "query": {
+                "prefix": {
+                    "title": search,
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 模糊查询
+    def fuzzy_query(self, search):
+        search = self.detect_Chinese(search)
+        body = {
+            "query": {
+                "wildcard": {
+                    # "substance": {
+                    #     "value": "{0}*".format(search)
+                    # },
+                    "title": {
+                        "value": "*{0}*".format(search),
+                    }
+
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 正则查询
+    def regex_query(self, search):
+        search = self.detect_Chinese(search)
+        body = {
+            "query": {
+                "regexp": {
+                    "title": {
+                        "value": "{0}.+".format(search),
+                    }
+                }
+
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 强查询
+    def query_string(self, search):
+        body = {
+            "query": {
+                "query_string": {
+                    "default_field": "substance",
+                    "query": "{}~".format(search),
+                    "fuzziness": "AUTO",
+                    "fuzzy_prefix_length": 2,
+                    "fuzzy_max_expansions": 20,
+                    "fuzzy_transpositions": True
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        # print(json.dumps(results, indent=2, ensure_ascii=False))
+        # print('##############################################')
+        # print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        # print('**********************************************')
+        # print(json.dumps(results, indent=2, ensure_ascii=False))
+        # print('**********************************************')
+        # print("查询到的总数目为:", total)
+
+    # 组合查询,结合多个查询在一起使用
+    def Combined_query(self, search):
+        search = self.detect_Chinese(search)
+        body = {
+            "query": {
+                "bool": {
+                    "should": [
+                        {
+                            "match_phrase_prefix": {
+                                "title": {
+                                    "query": search
+                                }
+                            }
+                        },
+                        {
+                            "match_phrase_prefix": {
+                                "substance": {
+                                    "query": search
+                                }
+                            }
+                        },
+                        {
+                            "prefix": {
+                                "title": {
+                                    "value": search,
+                                }
+                            }
+                        },
+                        {
+                            "prefix": {
+                                "substance": {
+                                    "value": search,
+                                }
+                            }
+                        },
+                        {
+                            "multi_match": {
+                                "query": search,
+                                "fields": ["substance", "title"],
+                                "boost": 2,
+
+                            }
+                        },
+                        {
+                            "wildcard": {
+                                "title": {
+                                    "value": "{0}*".format(search),
+                                }
+                            }
+                        },
+                        {
+                            "wildcard": {
+                                "substance": {
+                                    "value": "{0}*".format(search),
+
+                                }
+                            }
+                        },
+                    ]
+                }
+            },
+            "sort": [
+                {
+                    "strPubDate": {
+                        "order": "desc"
+                    }
+                }]
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 针对时间的范围查询
+    def range_search(self):
+        body = {
+            "query": {
+                "constant_score": {
+                    "filter": {
+                        "range": {
+                            "strPubDate": {
+                                "gte": "2019-07-08 00:10:00",
+                                "lte": "2020-02-09 00:09:00"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 同义词查询
+    def Synonyms_search(self, search):
+        body = {
+            "query": {
+                "simple_query_string": {
+                    "query": search,
+                    "auto_generate_synonyms_phrase_query": False
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 文本相似度
+    def cosine_similarity(self, sentence1: str, sentence2: str) -> float:
+        sum, sq1, sq2 = 0, 0, 0
+        s1_cut = list(jieba.cut(sentence1))
+        s2_cut = list(jieba.cut(sentence2))
+        word_set = set(s1_cut).union(set(s2_cut))
+        word_dict = dict()
+        i = 0
+        for word in word_set:
+            word_dict[word] = i
+            i += 1
+        s1_cut_code = [0] * len(word_dict)
+        for word in s1_cut:
+            s1_cut_code[word_dict[word]] += 1
+        s2_cut_code = [0] * len(word_dict)
+        for word in s2_cut:
+            s2_cut_code[word_dict[word]] += 1
+        for i in range(len(s1_cut_code)):
+            sum += s1_cut_code[i] * s2_cut_code[i]
+            sq1 += pow(s1_cut_code[i], 2)
+            sq2 += pow(s2_cut_code[i], 2)
+
+        try:
+            result = round(float(sum) / (math.sqrt(sq1) * math.sqrt(sq2)), 2)
+            result = 0.5 + result / 2
+        except ZeroDivisionError:
+            result = 0.0
+        result = float('%.2f' % result)
+        return result
+
+    # 分组统计
+    def group_count(self):
+        body = {
+            "aggs": {
+                "per_count": {
+                    "match": {
+                        "field": "strPubDate"
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 最大值
+    def max_num(self):
+        body = {
+            "aggs": {
+                "max_price": {
+                    "max": {
+                        "field": ""
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 最小值
+    def min_num(self):
+        body = {
+            "aggs": {
+                "min_price": {
+                    "min": {
+                        "field": "title"
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 平均值
+    def mean_num(self):
+        body = {
+            "aggs": {
+                "mean_PubDate": {
+                    "avg": {
+                        "field": "PubDate"
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 嵌套统计查询
+    def Nested_statistical_query(self, search):
+        body = {
+            "size": 0,
+            "aggs": {
+                "title": {
+                    "terms": {
+                        "field": search
+                    },
+                    "aggs": {
+                        "avg_price": {
+                            "avg": {
+                                "field": "title"
+                            }
+                        },
+                        "substance": {
+                            "terms": {
+                                "field": "substance"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 组合查询1
+    def Multiple_find(self, search1, search2):
+        body = {
+            "query": {
+                "bool": {
+                    "filter": {
+                        "range": {
+                            "price": {"gt": search1}
+                        }
+                    },
+                    "must": {
+                        "match": {
+                            "title": search2
+                        }
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 可视化
+    def Visual_display(self):
+        body = {
+            "size": 0,
+            "aggs": {
+                "price": {
+                    "histogram": {
+                        "field": "price",
+                        "interval": 20000
+                    },
+                    "aggs": {
+                        "revenue": {
+                            "sum": {
+                                "field": "price"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        query = self.es.search(index=self.index_name, doc_type=self.index_type, body=body)
+        results = query['hits']['hits']  # es查询出的结果第一页, 默认每页显示10条
+        if not results:
+            print("找不到你想要得结果!")
+            return
+        total = query['hits']['total']['value']  # es查询出的结果总量
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('##############################################')
+        print(json.dumps(query, indent=2, ensure_ascii=False))  # 这里可以设置存储得的格式
+        print('**********************************************')
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print('**********************************************')
+        print("查询到的总数目为:", total)
+
+    # 修改热词库
+    def ik_explain(self, path):
+        pass
+
+
+if __name__ == '__main__':
+    obj = ElasticObj("test2", "en", ip="127.0.0.1")
+    # obj = ElasticObj("test4", "en", ip="127.0.0.1")
+    # obj.create_index()
+    # # path = r"C:\Users\Administrator\PycharmProjects\python_learn\elasterSerach\dedu_suncn_news.json"
+    # path = r"C:\Users\Administrator\PycharmProjects\python_learn\elasterSerach\suncn_news_pickfromofficial.json"
+    # obj.insert_data(path)
+    # obj.Delete_Index("test7")
+    # obj.Delete_Index("test5")
+    # obj.Delete_Index_Data(7)
+    # obj.Get_Data_Id(1)
+    # obj.index_information("test4")
+    start = time.time()
+    # find_news = " xiang gang暴乱"
+    find_news = '机构 分支机构 非营利性 管理机构 业务范围 法人资格 医疗机构 金融机构 部门 行政部门 主管部门 高等院校 举办者 组织 证券公司 院校 保险机构 中介机构 全国性 非营利 募资'
+    # obj.Mongo_insert_ES()
+    # obj.Synonyms_search(find_news)
+    # obj.Tream_query(find_news)
+    # 组合查询
+    # obj.Combined_query(find_news)
+    # num = 100
+    # size = 200
+    # obj.Get_Data_By_Body(find_news, num, size)
+    # obj.regex_query(find_news)  # 正则查询
+    # obj.Phrase_match_pinyinandChinese(find_news)  # 普通的查询
+    obj.Sorce_pinyinandChinese(find_news)  # 修改评分函数
+    # obj.Cos_Sorce_pinyinandChinese(find_news)  # 修改评分函数，并调用自己的评分函数
+    # news = 'search'
+    # find_news = "刘" #模糊查询对输入有限制
+    # obj.fuzzy_query(find_news)
+    # obj.query_string(find_news)
+
+    # find_news = "刘"  # 前缀查询对输入有限制
+    # obj.Prefix_query(find_news)
+    # obj.range_search()
+    end = time.time()
+    print(end - start)
